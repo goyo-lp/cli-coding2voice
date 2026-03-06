@@ -1,0 +1,25 @@
+{
+  "name": "@cli2voice/tts-kokoro-local",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@cli2voice/voice-core": "file:../voice-core",
+    "kokoro-js": "^1.2.1"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --external kokoro-js",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  }
+}

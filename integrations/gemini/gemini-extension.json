@@ -1,0 +1,12 @@
+{
+  "name": "cli2voice",
+  "version": "0.1.0",
+  "description": "Voice playback, hooks, and MCP tools for terminal agent sessions.",
+  "mcpServers": {
+    "cli2voice": {
+      "command": "node",
+      "args": ["__CLI2VOICE_APP_CLI__", "mcp"],
+      "cwd": "${extensionPath}"
+    }
+  }
+}

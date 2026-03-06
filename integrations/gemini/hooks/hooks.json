@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "cli2voice-register",
+            "type": "command",
+            "command": "node ${extensionPath}/hooks/session-start.mjs",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "AfterAgent": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "cli2voice-after-agent",
+            "type": "command",
+            "command": "node ${extensionPath}/hooks/after-agent.mjs",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}

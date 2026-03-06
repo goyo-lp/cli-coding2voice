@@ -1,0 +1,37 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "noEmit": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "paths": {
+      "@cli2voice/voice-core": ["packages/voice-core/src/index.ts"],
+      "@cli2voice/voice-daemon": ["packages/voice-daemon/src/index.ts"],
+      "@cli2voice/voice-daemon/client": ["packages/voice-daemon/src/client.ts"],
+      "@cli2voice/voice-daemon/daemon": ["packages/voice-daemon/src/daemon.ts"],
+      "@cli2voice/voice-daemon/config": ["packages/voice-daemon/src/config.ts"],
+      "@cli2voice/mcp-server": ["packages/mcp-server/src/index.ts"],
+      "@cli2voice/playback-macos": ["packages/playback-macos/src/index.ts"],
+      "@cli2voice/playback-shell": ["packages/playback-shell/src/index.ts"],
+      "@cli2voice/tts-kokoro-local": ["packages/tts-kokoro-local/src/index.ts"],
+      "@cli2voice/tts-openai": ["packages/tts-openai/src/index.ts"],
+      "@cli2voice/tts-elevenlabs": ["packages/tts-elevenlabs/src/index.ts"],
+      "@cli2voice/provider-codex": ["packages/provider-codex/src/index.ts"],
+      "@cli2voice/provider-claude": ["packages/provider-claude/src/index.ts"],
+      "@cli2voice/provider-gemini": ["packages/provider-gemini/src/index.ts"]
+    }
+  }
+}

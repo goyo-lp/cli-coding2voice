@@ -1,0 +1,41 @@
+{
+  "name": "@cli2voice/voice-daemon",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
+    },
+    "./daemon": {
+      "types": "./dist/daemon.d.ts",
+      "import": "./dist/daemon.js"
+    },
+    "./config": {
+      "types": "./dist/config.d.ts",
+      "import": "./dist/config.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@cli2voice/playback-macos": "file:../playback-macos",
+    "@cli2voice/playback-shell": "file:../playback-shell",
+    "@cli2voice/tts-elevenlabs": "file:../tts-elevenlabs",
+    "@cli2voice/tts-kokoro-local": "file:../tts-kokoro-local",
+    "@cli2voice/tts-openai": "file:../tts-openai",
+    "@cli2voice/voice-core": "file:../voice-core"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts src/client.ts src/config.ts src/daemon.ts --format esm --dts",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  }
+}

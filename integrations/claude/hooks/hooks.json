@@ -1,0 +1,25 @@
+{
+  "description": "cli2voice session registration and final-response publishing for Claude Code",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.mjs"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/stop.mjs"
+          }
+        ]
+      }
+    ]
+  }
+}

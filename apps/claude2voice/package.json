@@ -1,0 +1,20 @@
+{
+  "name": "@cli2voice/claude2voice",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "claude2voice": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@cli2voice/provider-claude": "file:../../packages/provider-claude",
+    "@cli2voice/voice-daemon": "file:../../packages/voice-daemon"
+  },
+  "scripts": {
+    "build": "tsup src/cli.ts --format esm --out-dir dist",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx src/cli.ts"
+  }
+}

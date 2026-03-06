@@ -1,0 +1,28 @@
+{
+  "name": "cli2voice-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@11.8.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "check": "npm run check --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "clean": "find . -name dist -type d -prune -exec rm -rf {} +",
+    "dev:daemon": "npm --workspace @cli2voice/cli2voice run dev -- daemon start",
+    "dev:codex": "npm --workspace @cli2voice/codex2voice run dev",
+    "dev:claude": "npm --workspace @cli2voice/claude2voice run dev",
+    "dev:gemini": "npm --workspace @cli2voice/gemini2voice run dev"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.2",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}

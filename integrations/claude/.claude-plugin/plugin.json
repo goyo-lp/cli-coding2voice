@@ -1,0 +1,9 @@
+{
+  "name": "cli2voice",
+  "version": "0.1.0",
+  "description": "Voice playback, hooks, and MCP tools for terminal agent sessions.",
+  "author": {
+    "name": "cli2voice"
+  },
+  "hooks": "./hooks/hooks.json"
+}
