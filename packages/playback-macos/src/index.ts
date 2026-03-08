@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import type { ActivePlayback, AudioFormat, PlaybackBackend, PlaybackRequest } from '@cli2voice/voice-core';
+import { startMacosStreamingPlayback } from './helper.js';
 
 async function createPlaybackFile(buffer: Buffer, format: AudioFormat = 'mp3'): Promise<string> {
   const tempDir = path.join(os.tmpdir(), 'cli2voice-audio');
@@ -70,5 +71,9 @@ export class MacOsPlaybackBackend implements PlaybackBackend {
         await cleanup();
       }
     };
+  }
+
+  async playStream(chunks: AsyncIterable<Buffer>, request?: PlaybackRequest): Promise<ActivePlayback> {
+    return startMacosStreamingPlayback(chunks, request);
   }
 }

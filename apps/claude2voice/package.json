@@ -9,6 +9,7 @@
     "dist"
   ],
   "dependencies": {
+    "@cli2voice/dictation-core": "file:../../packages/dictation-core",
     "@cli2voice/provider-claude": "file:../../packages/provider-claude",
     "@cli2voice/voice-daemon": "file:../../packages/voice-daemon"
   },

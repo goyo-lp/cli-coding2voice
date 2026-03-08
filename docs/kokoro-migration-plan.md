@@ -2,7 +2,7 @@
 
 ## Goal
 
-Replace ElevenLabs as the default `cli2voice` speech provider with a local Kokoro voice, using:
+Use local Kokoro as the only `cli2voice` speech provider, using:
 
 - provider: `kokoro`
 - voice: `af_heart`
@@ -18,7 +18,6 @@ Replace ElevenLabs as the default `cli2voice` speech provider with a local Kokor
 
 ## Constraints
 
-- Keep the provider abstraction intact.
 - Do not regress Codex wrapper behavior.
 - Preserve playback backends and MCP control plane.
 - Confirm the migration with a real synthesis smoke test, not just type checks.
@@ -28,9 +27,9 @@ Replace ElevenLabs as the default `cli2voice` speech provider with a local Kokor
 1. Add `packages/tts-kokoro-local`.
 2. Use `kokoro-js` in Node CPU mode with a warm, reusable model instance.
 3. Synthesize audio as WAV and feed it through the existing playback layer.
-4. Extend daemon config with `tts.provider = kokoro` and a `kokoro` config section.
-5. Make Kokoro the default provider and `af_heart` the default voice.
-6. Keep other providers optional rather than deleting them.
+4. Simplify daemon config to a single `kokoro` section.
+5. Make `af_heart` the default voice.
+6. Remove hosted TTS provider packages and references from the repo.
 7. Update docs and integrations to describe Codex as the primary workflow.
 8. Validate with a real daemon + Codex-oriented smoke test.
 
@@ -45,6 +44,7 @@ Replace ElevenLabs as the default `cli2voice` speech provider with a local Kokor
 
 - `cli2voice status` reports `ttsProvider: kokoro` by default.
 - Default Kokoro voice is `af_heart`.
+- The runtime and package graph contain no non-Kokoro TTS code paths.
 - `npm run check`, `npm run build`, and `npm test` pass.
 - A real local Kokoro synthesis succeeds through the daemon.
 - Codex-facing docs describe the supported setup clearly.

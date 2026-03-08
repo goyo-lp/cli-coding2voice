@@ -52,9 +52,15 @@ export type SynthesisRequest = {
   instructions?: string;
 };
 
+export type SynthesisWarmRequest = Partial<Omit<SynthesisRequest, 'text'>> & {
+  text?: string;
+};
+
 export interface TextToSpeechProvider {
   readonly name: string;
   synthesize(request: SynthesisRequest): Promise<Buffer>;
+  warm?(request?: SynthesisWarmRequest): Promise<void>;
+  streamSynthesize?(request: SynthesisRequest): AsyncIterable<Buffer>;
 }
 
 export type PlaybackRequest = {
@@ -74,6 +80,7 @@ export type ActivePlayback = {
 export interface PlaybackBackend {
   readonly name: string;
   play(buffer: Buffer, request?: PlaybackRequest): Promise<ActivePlayback>;
+  playStream?(chunks: AsyncIterable<Buffer>, request?: PlaybackRequest): Promise<ActivePlayback>;
 }
 
 export type RegisterSessionInput = {

@@ -9,12 +9,24 @@ import { Cli2VoiceStore } from '../src/store.js';
 
 const ENV_KEYS = [
   'CLI2VOICE_DATA_DIR',
-  'CLI2VOICE_TTS_PROVIDER',
   'CLI2VOICE_KOKORO_MODEL',
   'CLI2VOICE_KOKORO_VOICE',
   'CLI2VOICE_KOKORO_DTYPE',
   'CLI2VOICE_KOKORO_DEVICE',
-  'CLI2VOICE_KOKORO_SPEED'
+  'CLI2VOICE_KOKORO_SPEED',
+  'CLI2VOICE_DICTATION_ENABLED',
+  'CLI2VOICE_DICTATION_SHORTCUT',
+  'CLI2VOICE_DICTATION_BACKEND',
+  'CLI2VOICE_DICTATION_INSERT_MODE',
+  'CLI2VOICE_DICTATION_STT_MODEL',
+  'CLI2VOICE_DICTATION_LANGUAGE',
+  'CLI2VOICE_DICTATION_DEVICE',
+  'CLI2VOICE_DICTATION_DTYPE',
+  'CLI2VOICE_DICTATION_PREWARM',
+  'CLI2VOICE_DICTATION_PARTIAL_RESULTS',
+  'CLI2VOICE_DICTATION_COMMAND_MODE_ENABLED',
+  'CLI2VOICE_DICTATION_COMMAND_MODE_WAKE_PHRASE',
+  'CLI2VOICE_DICTATION_MAX_RECORDING_MS'
 ] as const;
 
 const envSnapshots: Array<Record<string, string | undefined>> = [];
@@ -58,9 +70,6 @@ function createRuntimeConfig(tempDir: string): ResolvedDaemonConfig {
       conflictPolicy: 'stop-and-replace',
       rate: 1
     },
-    tts: {
-      provider: 'kokoro'
-    },
     kokoro: {
       model: 'onnx-community/Kokoro-82M-v1.0-ONNX',
       voice: 'af_heart',
@@ -68,15 +77,32 @@ function createRuntimeConfig(tempDir: string): ResolvedDaemonConfig {
       device: 'cpu',
       speed: 1
     },
-    openai: {
-      baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-4o-mini-tts',
-      voice: 'alloy'
-    },
-    elevenlabs: {
-      baseUrl: 'https://api.elevenlabs.io/v1',
-      model: 'eleven_flash_v2_5',
-      voice: 'EXAVITQu4vr4xnSDxMaL'
+    dictation: {
+      enabled: false,
+      shortcut: 'right_option',
+      backend: 'auto',
+      insertMode: 'type',
+      sttModel: 'openai/whisper-large-v3-turbo',
+      language: 'en',
+      device: 'cpu',
+      dtype: 'fp32',
+      prewarm: true,
+      partialResults: true,
+      dictionary: {},
+      snippets: {},
+      commandMode: {
+        enabled: true,
+        wakePhrase: 'command',
+        commands: {
+          send: 'submit',
+          submit: 'submit',
+          backspace: 'backspace',
+          'clear line': 'clear_line',
+          escape: 'escape',
+          tab: 'tab'
+        }
+      },
+      maxRecordingMs: 60000
     }
   };
 }
@@ -102,12 +128,24 @@ describe('Kokoro daemon defaults', () => {
     process.env.CLI2VOICE_DATA_DIR = tempDir;
 
     const config = await readDaemonConfig();
-    expect(config.tts.provider).toBe('kokoro');
     expect(config.kokoro.model).toBe('onnx-community/Kokoro-82M-v1.0-ONNX');
     expect(config.kokoro.voice).toBe('af_heart');
     expect(config.kokoro.dtype).toBe('q8');
     expect(config.kokoro.device).toBe('cpu');
     expect(config.kokoro.speed).toBe(1);
+    expect(config.dictation).toMatchObject({
+      enabled: false,
+      shortcut: 'right_option',
+      backend: 'auto',
+      insertMode: 'type',
+      sttModel: 'openai/whisper-large-v3-turbo',
+      language: 'en',
+      device: 'cpu',
+      dtype: 'fp32',
+      prewarm: true,
+      partialResults: true,
+      maxRecordingMs: 60000
+    });
   });
 
   it('reports Kokoro as the active provider in runtime status', async () => {
@@ -120,16 +158,28 @@ describe('Kokoro daemon defaults', () => {
       const status = runtime.getStatus() as {
         ttsProvider: string;
         config: {
-          tts: {
-            provider: string;
-            kokoroVoice: string;
+          kokoro: {
+            voice: string;
           };
+          dictation: {
+            sttModel: string;
+            prewarm: boolean;
+            backend: string;
+          };
+        };
+        dictationRuntime: {
+          state: string;
+          backend: string;
         };
       };
 
       expect(status.ttsProvider).toBe('kokoro');
-      expect(status.config.tts.provider).toBe('kokoro');
-      expect(status.config.tts.kokoroVoice).toBe('af_heart');
+      expect(status.config.kokoro.voice).toBe('af_heart');
+      expect(status.config.dictation.sttModel).toBe('openai/whisper-large-v3-turbo');
+      expect(status.config.dictation.prewarm).toBe(true);
+      expect(status.config.dictation.backend).toBe('auto');
+      expect(status.dictationRuntime.state).toBe('cold');
+      expect(status.dictationRuntime.backend).toBe('auto');
     } finally {
       runtime.close();
     }

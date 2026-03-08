@@ -32,6 +32,26 @@ export type ParseCodexActionsResult = {
   traces: string[];
 };
 
+const COMMENTARY_MIN_LENGTH = 18;
+const COMMENTARY_MAX_LENGTH = 260;
+const COMMENTARY_TOOL_NOISE_PATTERNS = [
+  /```/,
+  /\bChunk ID:/,
+  /\bProcess exited with code\b/,
+  /\bWall time:/,
+  /\bOriginal token count:/,
+  /\bOutput:\s*$/m,
+  /\bModified files:/,
+  /\bFinal contents:/,
+  /\bInstalled skills:/,
+  /\bWhat I verified:/,
+  /\bSources used\b/i,
+  /\bhttps?:\/\//i,
+  /(^|\n)\s*[-*]\s+/,
+  /(^|\n)\s*\d+\.\s+/,
+  /\n\s*\n\s*\S/
+] as const;
+
 function extractFinalAnswerFromResponseItem(payload: CodexSessionEvent['payload']): string {
   if (!payload) return '';
   if (payload.type !== 'message') return '';
@@ -44,6 +64,52 @@ function extractFinalAnswerFromResponseItem(payload: CodexSessionEvent['payload'
     .filter(Boolean)
     .join('\n')
     .trim();
+}
+
+export function normalizeCommentaryForSpeech(message: string): string {
+  return message
+    .trim()
+    .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function isSpeakableCommentaryMessage(message: string): boolean {
+  const trimmed = message.trim();
+  if (COMMENTARY_TOOL_NOISE_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+    return false;
+  }
+
+  const normalized = normalizeCommentaryForSpeech(trimmed);
+  if (normalized.length < COMMENTARY_MIN_LENGTH || normalized.length > COMMENTARY_MAX_LENGTH) {
+    return false;
+  }
+
+  const punctuationCount = (normalized.match(/[.?!]/g) ?? []).length;
+  if (punctuationCount > 4) {
+    return false;
+  }
+
+  const slashCount = (normalized.match(/\//g) ?? []).length;
+  if (slashCount >= 3) {
+    return false;
+  }
+
+  return true;
+}
+
+export function extractSpeakableCommentary(payload: CodexSessionEvent['payload']): string {
+  if (!payload) return '';
+  if (payload.type !== 'agent_message') return '';
+  if (payload.phase !== 'commentary') return '';
+
+  const raw = payload.message ?? '';
+  if (!isSpeakableCommentaryMessage(raw)) {
+    return '';
+  }
+
+  return normalizeCommentaryForSpeech(raw);
 }
 
 function parseModeSignal(value: string): SessionControlSignal | null {
@@ -107,6 +173,14 @@ export function parseCodexSessionActionsDetailed(
       const parsed = parseExplicitControlCommand((event.payload.message ?? '').trim());
       if (parsed?.kind === 'signal') {
         actions.push({ kind: 'control', signal: parsed.signal, line: index + 1, source: 'event_msg.user_message.command' });
+      }
+      continue;
+    }
+
+    if (event.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload?.phase === 'commentary') {
+      const message = extractSpeakableCommentary(event.payload);
+      if (message) {
+        pushCandidate(message, index + 1, 'event_msg.agent_message.commentary');
       }
       continue;
     }

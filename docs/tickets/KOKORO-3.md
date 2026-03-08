@@ -1,8 +1,8 @@
-# KOKORO-3: Update Codex-First Docs And Setup
+# KOKORO-3: Update Kokoro-Only Docs And Setup
 
 ## Goal
 
-Make Codex the clearly documented primary path and remove ElevenLabs-first assumptions from the repo docs.
+Make Codex the clearly documented primary path and remove legacy hosted-provider assumptions from the repo docs.
 
 ## Scope
 
@@ -28,4 +28,4 @@ Allowed supporting edits:
 - Docs say Kokoro is the default provider
 - Docs say `af_heart` is the default voice
 - Docs describe Codex as the primary integration path
-- No user-facing docs imply ElevenLabs is the default path
+- No user-facing docs imply any TTS provider other than Kokoro

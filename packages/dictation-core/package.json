@@ -1,0 +1,26 @@
+{
+  "name": "@cli2voice/dictation-core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "native"
+  ],
+  "dependencies": {
+    "@cli2voice/stt-whisper-local": "file:../stt-whisper-local"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --external @cli2voice/stt-whisper-local",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "prepack": "rm -rf native && mkdir -p native/macos-dictation-helper native/pty-proxy && cp ../../native/macos-dictation-helper/main.swift native/macos-dictation-helper/ && cp ../../native/pty-proxy/main.py native/pty-proxy/"
+  }
+}

@@ -5,6 +5,7 @@ import type {
   SessionSelector,
   SpeakNowInput
 } from '@cli2voice/voice-core';
+import type { DictationTranscribeInput } from './dictation.js';
 
 type RequestInitWithJson = {
   method?: string;
@@ -58,6 +59,10 @@ export class Cli2VoiceDaemonClient {
 
   async stopPlayback() {
     return this.request('/playback/stop', { method: 'POST', body: {} });
+  }
+
+  async transcribeDictation(input: DictationTranscribeInput) {
+    return this.request('/dictation/transcribe', { method: 'POST', body: input });
   }
 
   private async request(pathname: string, init: RequestInitWithJson = {}) {

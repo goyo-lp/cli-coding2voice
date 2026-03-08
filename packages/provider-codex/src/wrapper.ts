@@ -1,14 +1,14 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { runWrappedCli } from '@cli2voice/dictation-core';
 import { splitCompleteJsonlChunk } from '@cli2voice/voice-core';
 import { Cli2VoiceDaemonClient } from '@cli2voice/voice-daemon/client';
+import { readDaemonConfig } from '@cli2voice/voice-daemon/config';
 import { parseCodexSessionActionsDetailed } from './events.js';
 
 type TrackedFile = {
   offset: number;
-  isFresh: boolean;
   lastChunkAt: number;
   pendingLine: string;
 };
@@ -20,23 +20,24 @@ type SessionFileInfo = {
   mtimeMs: number;
 };
 
-type PollCandidate = {
-  filePath: string;
-  isFresh: boolean;
+type SessionMetaPayload = {
+  id?: string;
+  cwd?: string;
+  source?: unknown;
+  originator?: string;
 };
 
 const SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
-const MIN_POLL_INTERVAL_MS = 140;
-const MAX_POLL_INTERVAL_MS = 1100;
-const IDLE_POLL_BACKOFF_STEP_MS = 120;
+const MIN_POLL_INTERVAL_MS = 80;
+const MAX_POLL_INTERVAL_MS = 900;
+const IDLE_POLL_BACKOFF_STEP_MS = 80;
 const DISCOVERY_INTERVAL_MS = 900;
-const DISCOVERY_INTERVAL_LOCKED_MS = 3000;
-const ACTIVE_FILE_SWEEP_INTERVAL_MS = 2800;
-const ACTIVE_FILE_STALE_MS = 6000;
 const MAX_APPENDED_READ_BYTES = 512 * 1024;
+const SESSION_META_READ_BYTES = 64 * 1024;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const REPLAY_WINDOW_MS = 5000;
 const WS_DISABLE_FLAGS = ['responses_websockets', 'responses_websockets_v2'] as const;
+export const WRAPPED_CODEX_DEFAULT_VOICE_MODE = 'always' as const;
 
 function getSessionDayDir(date: Date): string {
   const yyyy = date.getFullYear().toString();
@@ -148,22 +149,66 @@ function computeNextPollInterval(previousMs: number, hadActivity: boolean): numb
   return Math.min(MAX_POLL_INTERVAL_MS, Math.max(MIN_POLL_INTERVAL_MS, stepped));
 }
 
-function selectTrackedFilesForPoll(
-  candidates: PollCandidate[],
-  activeFilePath: string | null,
-  includeBackgroundSweep: boolean
-): string[] {
-  if (activeFilePath && candidates.some((candidate) => candidate.filePath === activeFilePath)) {
-    if (!includeBackgroundSweep) return [activeFilePath];
-    return [
-      activeFilePath,
-      ...candidates.filter((candidate) => candidate.filePath !== activeFilePath).map((candidate) => candidate.filePath)
-    ];
+export function extractResumedCodexThreadId(userArgs: string[]): string | null {
+  for (let index = 0; index < userArgs.length; index += 1) {
+    if ((userArgs[index] ?? '') !== 'resume') {
+      continue;
+    }
+
+    const threadId = userArgs[index + 1]?.trim();
+    return threadId ? threadId : null;
   }
 
-  const fresh = candidates.filter((candidate) => candidate.isFresh).map((candidate) => candidate.filePath);
-  if (fresh.length > 0) return fresh;
-  return candidates.map((candidate) => candidate.filePath);
+  return null;
+}
+
+async function readSessionMeta(filePath: string): Promise<SessionMetaPayload | null> {
+  const handle = await fs.open(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(SESSION_META_READ_BYTES);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead <= 0) {
+      return null;
+    }
+
+    const head = buffer.toString('utf8', 0, bytesRead);
+    const lines = head.split('\n').slice(0, 8);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      try {
+        const event = JSON.parse(trimmed) as { type?: string; payload?: SessionMetaPayload };
+        if (event.type === 'session_meta' && event.payload) {
+          return event.payload;
+        }
+      } catch {
+        // ignore malformed partial lines at the start of the file
+      }
+    }
+
+    return null;
+  } finally {
+    await handle.close();
+  }
+}
+
+export function isPrimaryCliSessionMeta(meta: SessionMetaPayload | null | undefined, cwd: string): boolean {
+  if (!meta) {
+    return false;
+  }
+
+  if (meta.cwd !== cwd) {
+    return false;
+  }
+
+  if (meta.source !== 'cli') {
+    return false;
+  }
+
+  return meta.originator === 'codex_cli_rs';
 }
 
 export async function runCodexWrapper(args: string[], options: { debugEvents?: boolean } = {}): Promise<void> {
@@ -176,143 +221,151 @@ export async function runCodexWrapper(args: string[], options: { debugEvents?: b
 
   const client = new Cli2VoiceDaemonClient();
   await client.health();
+  const config = await readDaemonConfig();
 
   const codexArgs = buildCodexArgs(args);
+  const resumedThreadId = extractResumedCodexThreadId(codexArgs);
   const wrapperStartedAt = Date.now();
   const sessionId = `codex-${process.pid}-${wrapperStartedAt}`;
   await client.registerSession({
     sessionId,
     provider: 'codex',
     workspacePath: process.cwd(),
+    defaultMode: WRAPPED_CODEX_DEFAULT_VOICE_MODE,
     metadata: {
       argv: JSON.stringify(codexArgs)
     }
   });
 
-  const trackedFiles = new Map<string, TrackedFile>();
-  let activeFilePath: string | null = null;
+  const sessionMetaCache = new Map<string, Promise<SessionMetaPayload | null>>();
+  let trackedFilePath: string | null = null;
+  let trackedFile: TrackedFile | null = null;
   let lastDiscoveryAt = 0;
-  let lastBackgroundSweepAt = 0;
+  let publishQueue: Promise<void> = Promise.resolve();
 
-  const seedTrackedFiles = async (): Promise<boolean> => {
-    const files = await listSessionFilesFast();
-    const discoveredPaths = new Set(files.map((file) => file.filePath));
-    let changed = false;
-
-    for (const file of files) {
-      if (trackedFiles.has(file.filePath)) continue;
-      const replayFromStart = shouldReplayFromStart({ birthtimeMs: file.birthtimeMs }, wrapperStartedAt);
-      trackedFiles.set(file.filePath, {
-        offset: replayFromStart ? 0 : file.size,
-        isFresh: replayFromStart,
-        lastChunkAt: 0,
-        pendingLine: ''
+  const publishActionsInOrder = (actions: Awaited<ReturnType<typeof parseCodexSessionActionsDetailed>>['actions']): void => {
+    publishQueue = publishQueue
+      .then(async () => {
+        await client.publishActions({ sessionId }, { actions });
+      })
+      .catch((error) => {
+        process.stderr.write(`cli2voice publish failed: ${error instanceof Error ? error.message : String(error)}\n`);
       });
-      changed = true;
-    }
-
-    for (const trackedPath of Array.from(trackedFiles.keys())) {
-      if (discoveredPaths.has(trackedPath)) continue;
-      trackedFiles.delete(trackedPath);
-      if (activeFilePath === trackedPath) {
-        activeFilePath = null;
-      }
-      changed = true;
-    }
-
-    return changed;
   };
 
-  const discoverIfNeeded = async (): Promise<boolean> => {
-    const now = Date.now();
-    const discoveryInterval = activeFilePath ? DISCOVERY_INTERVAL_LOCKED_MS : DISCOVERY_INTERVAL_MS;
-    if (now - lastDiscoveryAt < discoveryInterval) return false;
-    lastDiscoveryAt = now;
-    return seedTrackedFiles();
-  };
-
-  const shouldSwitchActiveFile = (candidateFilePath: string, now: number): boolean => {
-    if (activeFilePath === candidateFilePath) return false;
-    const currentActive = activeFilePath ? trackedFiles.get(activeFilePath) : null;
-    const activeIsStale = !currentActive || now - currentActive.lastChunkAt >= ACTIVE_FILE_STALE_MS;
-    return !activeFilePath || activeIsStale;
-  };
-
-  const pollSession = async (): Promise<boolean> => {
-    const discoveredChanges = await discoverIfNeeded();
-    let hadActivity = discoveredChanges;
-    const now = Date.now();
-    const shouldSweepAll = Boolean(activeFilePath && now - lastBackgroundSweepAt >= ACTIVE_FILE_SWEEP_INTERVAL_MS);
-    if (shouldSweepAll) {
-      lastBackgroundSweepAt = now;
+  const getCachedSessionMeta = (filePath: string): Promise<SessionMetaPayload | null> => {
+    const existing = sessionMetaCache.get(filePath);
+    if (existing) {
+      return existing;
     }
 
-    const filesToPoll = selectTrackedFilesForPoll(
-      Array.from(trackedFiles.entries()).map(([filePath, state]) => ({ filePath, isFresh: state.isFresh })),
-      activeFilePath,
-      shouldSweepAll
-    );
+    const pending = readSessionMeta(filePath).catch(() => null);
+    sessionMetaCache.set(filePath, pending);
+    return pending;
+  };
 
-    for (const filePath of filesToPoll) {
-      const state = trackedFiles.get(filePath);
-      if (!state) continue;
-      let nextOffset = state.offset;
-      let chunk = '';
-      let pendingLine = state.pendingLine;
-      try {
-        const result = await readAppendedChunk(filePath, state.offset);
-        nextOffset = result.nextOffset;
-        chunk = result.chunk;
-        if (result.didResetOffset) pendingLine = '';
-      } catch {
-        if (activeFilePath === filePath) activeFilePath = null;
+  const discoverTrackedFile = async (): Promise<boolean> => {
+    if (trackedFilePath && trackedFile) {
+      return false;
+    }
+
+    const files = await listSessionFilesFast();
+    const freshCutoff = wrapperStartedAt - REPLAY_WINDOW_MS;
+    const explicitMatchByPath =
+      resumedThreadId ? files.find((file) => path.basename(file.filePath).includes(resumedThreadId)) ?? null : null;
+
+    const candidates = explicitMatchByPath ? [explicitMatchByPath] : files;
+    for (const file of candidates) {
+      if (!resumedThreadId && file.birthtimeMs < freshCutoff) {
         continue;
       }
 
-      const framed = splitCompleteJsonlChunk(`${pendingLine}${chunk}`);
-      trackedFiles.set(filePath, {
-        ...state,
-        offset: nextOffset,
-        lastChunkAt: chunk ? now : state.lastChunkAt,
-        pendingLine: framed.trailingPartial,
-        isFresh: false
-      });
-      if (!chunk) continue;
-      hadActivity = true;
+      const meta = await getCachedSessionMeta(file.filePath);
+      if (!meta) {
+        continue;
+      }
+
+      if (resumedThreadId) {
+        if (meta.id !== resumedThreadId) {
+          continue;
+        }
+      } else if (!isPrimaryCliSessionMeta(meta, process.cwd())) {
+        continue;
+      }
+
+      const replayFromStart = shouldReplayFromStart({ birthtimeMs: file.birthtimeMs }, wrapperStartedAt);
+      trackedFilePath = file.filePath;
+      trackedFile = {
+        offset: resumedThreadId ? file.size : replayFromStart ? 0 : file.size,
+        lastChunkAt: 0,
+        pendingLine: ''
+      };
+      debug(`tracking ${path.basename(file.filePath)}${meta.id ? ` thread=${meta.id}` : ''}`);
+      return true;
+    }
+
+    return false;
+  };
+
+  const refreshTrackedFile = async (): Promise<boolean> => {
+    if (!trackedFilePath || !trackedFile) {
+      return false;
+    }
+
+    try {
+      const result = await readAppendedChunk(trackedFilePath, trackedFile.offset);
+      const framed = splitCompleteJsonlChunk(`${trackedFile.pendingLine}${result.chunk}`);
+      const now = Date.now();
+      trackedFile = {
+        offset: result.nextOffset,
+        lastChunkAt: result.chunk ? now : trackedFile.lastChunkAt,
+        pendingLine: framed.trailingPartial
+      };
+
+      if (!result.chunk) {
+        return false;
+      }
 
       const { actions, traces } = parseCodexSessionActionsDetailed(framed.completeChunk, { debug: debugEvents });
       if (debugEvents) {
         for (const trace of traces) {
-          debug(`${path.basename(filePath)} ${trace}`);
+          debug(`${path.basename(trackedFilePath)} ${trace}`);
         }
       }
-      if (actions.length === 0) continue;
-      if (!activeFilePath && state.isFresh) {
-        activeFilePath = filePath;
+      if (actions.length > 0) {
+        publishActionsInOrder(actions);
       }
-      if (actions.some((action) => action.kind === 'candidate') && shouldSwitchActiveFile(filePath, now)) {
-        activeFilePath = filePath;
-      }
-      await client.publishActions({ sessionId }, { actions });
+      return true;
+    } catch {
+      trackedFilePath = null;
+      trackedFile = null;
+      return false;
     }
-
-    return hadActivity;
   };
 
-  await seedTrackedFiles();
+  const discoverIfNeeded = async (): Promise<boolean> => {
+    const now = Date.now();
+    if (now - lastDiscoveryAt < DISCOVERY_INTERVAL_MS) return false;
+    lastDiscoveryAt = now;
+    return discoverTrackedFile();
+  };
 
-  const child = spawn('codex', codexArgs, {
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      CLI2VOICE_SESSION_ID: sessionId
+  const pollSession = async (): Promise<boolean> => {
+    const discovered = await discoverIfNeeded();
+    if (!trackedFilePath || !trackedFile) {
+      return discovered;
     }
-  });
 
-  child.on('error', (error) => {
-    process.stderr.write(`cli2voice codex spawn failed: ${error.message}\n`);
-  });
+    const hadActivity = await refreshTrackedFile();
+    return discovered || hadActivity;
+  };
 
+  await discoverTrackedFile();
+
+  /* Legacy broad-session watcher removed.
+     The wrapper now locks onto the single Codex session file created for this
+     launch (or the explicitly resumed thread) so parallel wrappers do not
+     re-speak each other’s output. */
   let pollIntervalMs = MIN_POLL_INTERVAL_MS;
   let polling = false;
   let timer: NodeJS.Timeout | null = null;
@@ -340,11 +393,18 @@ export async function runCodexWrapper(args: string[], options: { debugEvents?: b
   timer = setInterval(tick, pollIntervalMs);
   tick();
 
-  const exitCode = await new Promise<number>((resolve) => {
-    child.on('close', (code) => resolve(code ?? 1));
+  await runWrappedCli({
+    command: 'codex',
+    args: codexArgs,
+    dictation: config.dictation,
+    env: {
+      ...process.env,
+      CLI2VOICE_SESSION_ID: sessionId
+    },
+    onExit: async () => {
+      if (timer) clearInterval(timer);
+      await pollSession();
+      await publishQueue;
+    }
   });
-
-  if (timer) clearInterval(timer);
-  await pollSession();
-  process.exitCode = exitCode;
 }

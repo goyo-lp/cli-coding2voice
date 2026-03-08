@@ -14,11 +14,13 @@
     "dist"
   ],
   "dependencies": {
+    "@cli2voice/dictation-core": "file:../dictation-core",
     "@cli2voice/voice-core": "file:../voice-core",
     "@cli2voice/voice-daemon": "file:../voice-daemon"
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
   }
 }

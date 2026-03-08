@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { runWrappedCli } from '@cli2voice/dictation-core';
 import { Cli2VoiceDaemonClient } from '@cli2voice/voice-daemon/client';
+import { readDaemonConfig } from '@cli2voice/voice-daemon/config';
 import type { SessionControlSignal } from '@cli2voice/voice-core';
 
 async function readMessage(argv: string[]): Promise<string> {
@@ -51,4 +53,13 @@ export async function runGeminiHookCli(argv: string[]): Promise<void> {
   }
 
   throw new Error('Unknown gemini provider command. Use register, final, or signal.');
+}
+
+export async function runGeminiWrapper(argv: string[]): Promise<void> {
+  const config = await readDaemonConfig();
+  await runWrappedCli({
+    command: 'gemini',
+    args: argv,
+    dictation: config.dictation
+  });
 }

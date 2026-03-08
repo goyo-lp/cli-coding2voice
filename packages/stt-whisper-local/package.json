@@ -1,5 +1,5 @@
 {
-  "name": "@cli2voice/tts-elevenlabs",
+  "name": "@cli2voice/stt-whisper-local",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
@@ -14,10 +14,11 @@
     "dist"
   ],
   "dependencies": {
-    "@cli2voice/voice-core": "file:../voice-core"
+    "@huggingface/transformers": "^3.8.1"
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "build": "tsup src/index.ts --format esm --dts --external @huggingface/transformers",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run src/index.test.ts"
   }
 }

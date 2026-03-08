@@ -2,6 +2,7 @@ import http from 'node:http';
 import { URL } from 'node:url';
 import type { PublishActionsInput, RegisterSessionInput, SessionOverrideInput, SpeakNowInput } from '@cli2voice/voice-core';
 import type { ResolvedDaemonConfig } from './config.js';
+import type { DictationTranscribeInput } from './dictation.js';
 import { Cli2VoiceRuntime } from './runtime.js';
 
 async function readJson<T>(request: http.IncomingMessage): Promise<T> {
@@ -87,6 +88,12 @@ export function createDaemonServer(runtime: Cli2VoiceRuntime, config: ResolvedDa
 
       if (method === 'POST' && url.pathname === '/playback/stop') {
         sendJson(response, 200, { stopped: await runtime.stopPlayback() });
+        return;
+      }
+
+      if (method === 'POST' && url.pathname === '/dictation/transcribe') {
+        const body = await readJson<DictationTranscribeInput>(request);
+        sendJson(response, 200, await runtime.transcribeDictation(body));
         return;
       }
 

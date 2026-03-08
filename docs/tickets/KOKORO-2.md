@@ -1,20 +1,19 @@
-# KOKORO-2: Wire Kokoro Into Runtime Defaults
+# KOKORO-2: Make Kokoro The Only Runtime TTS
 
 ## Goal
 
-Make Kokoro the default TTS provider for `cli2voice` while keeping the provider abstraction intact.
+Make Kokoro the only TTS provider for `cli2voice`.
 
 ## Scope
 
-- Extend daemon config types with `kokoro`
+- Simplify daemon config types to `kokoro`
 - Add config defaults for:
-  - provider `kokoro`
   - voice `af_heart`
   - Node CPU mode
   - quantization setting
-- Update runtime provider selection to instantiate Kokoro
+- Remove all non-Kokoro provider wiring
+- Update runtime provider selection to instantiate Kokoro only
 - Ensure status output reports Kokoro configuration
-- Keep OpenAI and ElevenLabs optional
 
 ## Files
 
@@ -30,7 +29,7 @@ Allowed supporting edits:
 
 ## Acceptance criteria
 
-- Default runtime provider is Kokoro
 - `cli2voice status` shows `ttsProvider: kokoro`
 - Status/config surfaces include Kokoro voice information
+- No runtime config or dependency wiring remains for non-Kokoro TTS providers
 - Existing daemon behavior remains intact

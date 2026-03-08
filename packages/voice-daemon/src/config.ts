@@ -5,9 +5,26 @@ import type { DefaultVoiceMode } from '@cli2voice/voice-core';
 
 export type PlaybackConflictPolicy = 'ignore' | 'stop-and-replace';
 export type PlaybackBackendKind = 'auto' | 'macos' | 'shell';
-export type TtsProviderKind = 'kokoro' | 'openai' | 'elevenlabs';
 export type KokoroDType = 'fp32' | 'fp16' | 'q8' | 'q4' | 'q4f16';
 export type KokoroDeviceKind = 'cpu' | 'wasm' | 'webgpu';
+export type DictationShortcut = 'right_option' | 'control_v';
+export type DictationInsertMode = 'type';
+export type DictationBackendKind = 'auto' | 'macos_native' | 'daemon_whisper';
+export type DictationCommandBinding =
+  | 'submit'
+  | 'backspace'
+  | 'clear_line'
+  | 'escape'
+  | 'tab'
+  | `text:${string}`;
+export type DictationDType = string | Record<string, string> | null;
+export type DictationDictionary = Record<string, string>;
+export type DictationSnippets = Record<string, string>;
+export type DictationCommandModeConfig = {
+  enabled?: boolean;
+  wakePhrase?: string;
+  commands?: Record<string, DictationCommandBinding>;
+};
 
 export type StoredDaemonConfig = {
   host?: string;
@@ -28,21 +45,21 @@ export type StoredDaemonConfig = {
     device?: KokoroDeviceKind;
     speed?: number;
   };
-  openai?: {
-    apiKey?: string;
-    baseUrl?: string;
-    model?: string;
-    voice?: string;
-    instructions?: string;
-  };
-  elevenlabs?: {
-    apiKey?: string;
-    baseUrl?: string;
-    model?: string;
-    voice?: string;
-  };
-  tts?: {
-    provider?: TtsProviderKind;
+  dictation?: {
+    enabled?: boolean;
+    shortcut?: DictationShortcut;
+    backend?: DictationBackendKind;
+    insertMode?: DictationInsertMode;
+    sttModel?: string;
+    language?: string;
+    device?: string | null;
+    dtype?: DictationDType;
+    prewarm?: boolean;
+    partialResults?: boolean;
+    maxRecordingMs?: number;
+    dictionary?: DictationDictionary;
+    snippets?: DictationSnippets;
+    commandMode?: DictationCommandModeConfig;
   };
 };
 
@@ -60,9 +77,6 @@ export type ResolvedDaemonConfig = {
     conflictPolicy: PlaybackConflictPolicy;
     rate: number;
   };
-  tts: {
-    provider: TtsProviderKind;
-  };
   kokoro: {
     model: string;
     voice: string;
@@ -70,22 +84,37 @@ export type ResolvedDaemonConfig = {
     device: KokoroDeviceKind;
     speed: number;
   };
-  openai: {
-    apiKey?: string;
-    baseUrl: string;
-    model: string;
-    voice: string;
-    instructions?: string;
-  };
-  elevenlabs: {
-    apiKey?: string;
-    baseUrl: string;
-    model: string;
-    voice: string;
+  dictation: {
+    enabled: boolean;
+    shortcut: DictationShortcut;
+    backend: DictationBackendKind;
+    insertMode: DictationInsertMode;
+    sttModel: string;
+    language: string;
+    device: string | null;
+    dtype: DictationDType;
+    prewarm: boolean;
+    partialResults: boolean;
+    maxRecordingMs: number;
+    dictionary: DictationDictionary;
+    snippets: DictationSnippets;
+    commandMode: {
+      enabled: boolean;
+      wakePhrase: string;
+      commands: Record<string, DictationCommandBinding>;
+    };
   };
 };
 
 const DEFAULT_DATA_DIR = path.join(os.homedir(), '.cli2voice');
+const DEFAULT_DICTATION_COMMANDS: Record<string, DictationCommandBinding> = {
+  send: 'submit',
+  submit: 'submit',
+  backspace: 'backspace',
+  'clear line': 'clear_line',
+  escape: 'escape',
+  tab: 'tab'
+};
 
 function getEnvNumber(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -118,9 +147,6 @@ function mergeConfig(stored: StoredDaemonConfig, dataDir: string, configPath: st
         'stop-and-replace',
       rate: getEnvNumber('CLI2VOICE_PLAYBACK_RATE', stored.playback?.rate ?? 1)
     },
-    tts: {
-      provider: (process.env.CLI2VOICE_TTS_PROVIDER as TtsProviderKind | undefined) ?? stored.tts?.provider ?? 'kokoro'
-    },
     kokoro: {
       model:
         process.env.CLI2VOICE_KOKORO_MODEL ??
@@ -131,18 +157,55 @@ function mergeConfig(stored: StoredDaemonConfig, dataDir: string, configPath: st
       device: (process.env.CLI2VOICE_KOKORO_DEVICE as KokoroDeviceKind | undefined) ?? stored.kokoro?.device ?? 'cpu',
       speed: getEnvNumber('CLI2VOICE_KOKORO_SPEED', stored.kokoro?.speed ?? 1)
     },
-    openai: {
-      apiKey: process.env.OPENAI_API_KEY ?? stored.openai?.apiKey,
-      baseUrl: process.env.OPENAI_BASE_URL ?? stored.openai?.baseUrl ?? 'https://api.openai.com/v1',
-      model: process.env.CLI2VOICE_OPENAI_MODEL ?? stored.openai?.model ?? 'gpt-4o-mini-tts',
-      voice: process.env.CLI2VOICE_OPENAI_VOICE ?? stored.openai?.voice ?? 'alloy',
-      instructions: process.env.CLI2VOICE_OPENAI_INSTRUCTIONS ?? stored.openai?.instructions
-    },
-    elevenlabs: {
-      apiKey: process.env.ELEVENLABS_API_KEY ?? stored.elevenlabs?.apiKey,
-      baseUrl: process.env.ELEVENLABS_BASE_URL ?? stored.elevenlabs?.baseUrl ?? 'https://api.elevenlabs.io/v1',
-      model: process.env.CLI2VOICE_ELEVENLABS_MODEL ?? stored.elevenlabs?.model ?? 'eleven_flash_v2_5',
-      voice: process.env.CLI2VOICE_ELEVENLABS_VOICE ?? stored.elevenlabs?.voice ?? 'EXAVITQu4vr4xnSDxMaL'
+    dictation: {
+      enabled: process.env.CLI2VOICE_DICTATION_ENABLED === 'true' ? true : stored.dictation?.enabled ?? false,
+      shortcut:
+        (process.env.CLI2VOICE_DICTATION_SHORTCUT as DictationShortcut | undefined) ??
+        stored.dictation?.shortcut ??
+        'right_option',
+      backend:
+        (process.env.CLI2VOICE_DICTATION_BACKEND as DictationBackendKind | undefined) ??
+        stored.dictation?.backend ??
+        'auto',
+      insertMode:
+        (process.env.CLI2VOICE_DICTATION_INSERT_MODE as DictationInsertMode | undefined) ??
+        stored.dictation?.insertMode ??
+        'type',
+      sttModel:
+        process.env.CLI2VOICE_DICTATION_STT_MODEL ??
+        stored.dictation?.sttModel ??
+        'openai/whisper-large-v3-turbo',
+      language: process.env.CLI2VOICE_DICTATION_LANGUAGE ?? stored.dictation?.language ?? 'en',
+      device: process.env.CLI2VOICE_DICTATION_DEVICE ?? stored.dictation?.device ?? 'cpu',
+      dtype: process.env.CLI2VOICE_DICTATION_DTYPE ?? stored.dictation?.dtype ?? 'fp32',
+      prewarm:
+        process.env.CLI2VOICE_DICTATION_PREWARM === 'false'
+          ? false
+          : stored.dictation?.prewarm ?? true,
+      partialResults:
+        process.env.CLI2VOICE_DICTATION_PARTIAL_RESULTS === 'false'
+          ? false
+          : stored.dictation?.partialResults ?? true,
+      maxRecordingMs: getEnvNumber(
+        'CLI2VOICE_DICTATION_MAX_RECORDING_MS',
+        stored.dictation?.maxRecordingMs ?? 60000
+      ),
+      dictionary: stored.dictation?.dictionary ?? {},
+      snippets: stored.dictation?.snippets ?? {},
+      commandMode: {
+        enabled:
+          process.env.CLI2VOICE_DICTATION_COMMAND_MODE_ENABLED === 'false'
+            ? false
+            : stored.dictation?.commandMode?.enabled ?? true,
+        wakePhrase:
+          process.env.CLI2VOICE_DICTATION_COMMAND_MODE_WAKE_PHRASE ??
+          stored.dictation?.commandMode?.wakePhrase ??
+          'command',
+        commands: {
+          ...DEFAULT_DICTATION_COMMANDS,
+          ...(stored.dictation?.commandMode?.commands ?? {})
+        }
+      }
     }
   };
 }

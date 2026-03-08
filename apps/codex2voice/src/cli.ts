@@ -6,7 +6,7 @@ async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
   const client = new Cli2VoiceDaemonClient();
 
-  if (!command || command === 'wrap' || command === 'run') {
+  if (!command || command === 'wrap' || command === 'run' || command === 'codex') {
     await runCodexWrapper(command ? rest : process.argv.slice(2));
     return;
   }
@@ -24,7 +24,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  throw new Error('Unknown codex2voice command. Use wrap, status, on, off, or default.');
+  throw new Error('Unknown codex2voice command. Use wrap, codex, status, on, off, or default.');
 }
 
 main().catch((error) => {

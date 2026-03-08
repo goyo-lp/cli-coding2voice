@@ -17,11 +17,19 @@ import {
 } from '@cli2voice/voice-core';
 import { MacOsPlaybackBackend } from '@cli2voice/playback-macos';
 import { ShellPlaybackBackend } from '@cli2voice/playback-shell';
-import { ElevenLabsTextToSpeechProvider } from '@cli2voice/tts-elevenlabs';
 import { KokoroLocalTextToSpeechProvider } from '@cli2voice/tts-kokoro-local';
-import { OpenAiTextToSpeechProvider } from '@cli2voice/tts-openai';
 import type { ResolvedDaemonConfig } from './config.js';
+import {
+  createDictationTranscriber,
+  type DictationTranscribeInput,
+  type DictationTranscribeResult,
+  type DictationTranscriber
+} from './dictation.js';
 import { Cli2VoiceStore } from './store.js';
+
+export type Cli2VoiceRuntimeDependencies = {
+  createDictationTranscriber?: (config: ResolvedDaemonConfig['dictation']) => DictationTranscriber;
+};
 
 export class Cli2VoiceRuntime {
   private readonly recentMessages = new Map<string, Map<string, number>>();
@@ -29,10 +37,17 @@ export class Cli2VoiceRuntime {
   private readonly ttsProvider: TextToSpeechProvider;
   private currentPlayback: ActivePlayback | null = null;
   private speechQueue: Promise<void> = Promise.resolve();
+  private ttsWarmPromise: Promise<void> | null = null;
+  private ttsWarmState: 'cold' | 'warming' | 'warm' = 'cold';
+  private activeSpeechJobId = 0;
+  private dictationTranscriber: DictationTranscriber | null = null;
+  private dictationWarmPromise: Promise<void> | null = null;
+  private dictationWarmState: 'cold' | 'warming' | 'warm' = 'cold';
 
   constructor(
     private readonly config: ResolvedDaemonConfig,
-    private readonly store: Cli2VoiceStore
+    private readonly store: Cli2VoiceStore,
+    private readonly dependencies: Cli2VoiceRuntimeDependencies = {}
   ) {
     this.playbackBackend = this.createPlaybackBackend();
     this.ttsProvider = this.createTtsProvider();
@@ -40,6 +55,16 @@ export class Cli2VoiceRuntime {
 
   async initialize(): Promise<void> {
     await this.store.initialize();
+    await this.ensureTtsWarm().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`cli2voice tts warmup failed: ${message}\n`);
+    });
+    if (this.config.dictation.enabled && this.config.dictation.prewarm) {
+      await this.ensureDictationWarm().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`cli2voice dictation warmup failed: ${message}\n`);
+      });
+    }
   }
 
   registerSession(input: RegisterSessionInput): SessionRecord {
@@ -80,22 +105,60 @@ export class Cli2VoiceRuntime {
         summarizeCodeHeavy: this.config.summarizeCodeHeavy,
         duplicateWindowMs: this.config.duplicateWindowMs,
         playback: this.config.playback,
-        tts: {
-          provider: this.config.tts.provider,
-          kokoroModel: this.config.kokoro.model,
-          kokoroVoice: this.config.kokoro.voice,
-          kokoroDType: this.config.kokoro.dtype,
-          kokoroDevice: this.config.kokoro.device,
-          kokoroSpeed: this.config.kokoro.speed,
-          openaiModel: this.config.openai.model,
-          openaiVoice: this.config.openai.voice,
-          elevenlabsModel: this.config.elevenlabs.model,
-          elevenlabsVoice: this.config.elevenlabs.voice,
-          hasOpenAiKey: Boolean(this.config.openai.apiKey),
-          hasElevenLabsKey: Boolean(this.config.elevenlabs.apiKey)
+        kokoro: {
+          model: this.config.kokoro.model,
+          voice: this.config.kokoro.voice,
+          dtype: this.config.kokoro.dtype,
+          device: this.config.kokoro.device,
+          speed: this.config.kokoro.speed
+        },
+        dictation: {
+          enabled: this.config.dictation.enabled,
+          shortcut: this.config.dictation.shortcut,
+          backend: this.config.dictation.backend,
+          insertMode: this.config.dictation.insertMode,
+          sttModel: this.config.dictation.sttModel,
+          language: this.config.dictation.language,
+          device: this.config.dictation.device,
+          dtype: this.config.dictation.dtype,
+          prewarm: this.config.dictation.prewarm,
+          partialResults: this.config.dictation.partialResults,
+          maxRecordingMs: this.config.dictation.maxRecordingMs,
+          dictionary: this.config.dictation.dictionary,
+          snippets: this.config.dictation.snippets,
+          commandMode: this.config.dictation.commandMode
         }
+      },
+      ttsRuntime: {
+        state: this.ttsWarmState,
+        model: this.config.kokoro.model,
+        voice: this.config.kokoro.voice,
+        dtype: this.config.kokoro.dtype,
+        device: this.config.kokoro.device
+      },
+      dictationRuntime: {
+        state: this.dictationWarmState,
+        model: this.config.dictation.sttModel,
+        backend: this.config.dictation.backend,
+        device: this.config.dictation.device,
+        dtype: this.config.dictation.dtype
       }
     };
+  }
+
+  async transcribeDictation(input: DictationTranscribeInput): Promise<DictationTranscribeResult> {
+    const transcriber = this.getOrCreateDictationTranscriber();
+    const request = {
+      language: input.language ?? this.config.dictation.language,
+      model: input.model ?? this.config.dictation.sttModel
+    };
+    if (this.dictationWarmState === 'cold') {
+      this.dictationWarmState = 'warming';
+    }
+
+    const result = await transcriber.transcribeFile(input.audioPath, request);
+    this.dictationWarmState = 'warm';
+    return result;
   }
 
   applySignal(input: SessionOverrideInput): SessionRecord {
@@ -213,6 +276,7 @@ export class Cli2VoiceRuntime {
   }
 
   async stopPlayback(): Promise<boolean> {
+    this.activeSpeechJobId += 1;
     if (!this.currentPlayback) {
       return false;
     }
@@ -236,27 +300,49 @@ export class Cli2VoiceRuntime {
   }
 
   private createTtsProvider(): TextToSpeechProvider {
-    if (this.config.tts.provider === 'kokoro') {
-      return new KokoroLocalTextToSpeechProvider({
-        model: this.config.kokoro.model,
-        voice: this.config.kokoro.voice,
-        dtype: this.config.kokoro.dtype,
-        device: this.config.kokoro.device,
-        speed: this.config.kokoro.speed
-      });
-    }
-
-    if (this.config.tts.provider === 'elevenlabs') {
-      return new ElevenLabsTextToSpeechProvider({
-        apiKey: this.config.elevenlabs.apiKey,
-        baseUrl: this.config.elevenlabs.baseUrl
-      });
-    }
-
-    return new OpenAiTextToSpeechProvider({
-      apiKey: this.config.openai.apiKey,
-      baseUrl: this.config.openai.baseUrl
+    return new KokoroLocalTextToSpeechProvider({
+      model: this.config.kokoro.model,
+      voice: this.config.kokoro.voice,
+      dtype: this.config.kokoro.dtype,
+      device: this.config.kokoro.device,
+      speed: this.config.kokoro.speed
     });
+  }
+
+  private getOrCreateDictationTranscriber(): DictationTranscriber {
+    if (this.dictationTranscriber) {
+      return this.dictationTranscriber;
+    }
+
+    const create = this.dependencies.createDictationTranscriber ?? createDictationTranscriber;
+    this.dictationTranscriber = create(this.config.dictation);
+    return this.dictationTranscriber;
+  }
+
+  private async ensureDictationWarm(): Promise<void> {
+    if (this.dictationWarmState === 'warm') {
+      return;
+    }
+    if (this.dictationWarmPromise) {
+      return this.dictationWarmPromise;
+    }
+
+    const transcriber = this.getOrCreateDictationTranscriber();
+    this.dictationWarmState = 'warming';
+    this.dictationWarmPromise = transcriber
+      .warm({ model: this.config.dictation.sttModel })
+      .then(() => {
+        this.dictationWarmState = 'warm';
+      })
+      .catch((error) => {
+        this.dictationWarmState = 'cold';
+        throw error;
+      })
+      .finally(() => {
+        this.dictationWarmPromise = null;
+      });
+
+    return this.dictationWarmPromise;
   }
 
   private resolveSessionOrThrow(selector: SessionSelector): SessionRecord {
@@ -295,32 +381,8 @@ export class Cli2VoiceRuntime {
     return typeof previous === 'number' && now - previous <= this.config.duplicateWindowMs;
   }
 
-  private getCurrentVoice(): string {
-    switch (this.config.tts.provider) {
-      case 'kokoro':
-        return this.config.kokoro.voice;
-      case 'elevenlabs':
-        return this.config.elevenlabs.voice;
-      case 'openai':
-      default:
-        return this.config.openai.voice;
-    }
-  }
-
-  private getCurrentModel(): string {
-    switch (this.config.tts.provider) {
-      case 'kokoro':
-        return this.config.kokoro.model;
-      case 'elevenlabs':
-        return this.config.elevenlabs.model;
-      case 'openai':
-      default:
-        return this.config.openai.model;
-    }
-  }
-
   private getCurrentAudioFormat(): AudioFormat {
-    return this.config.tts.provider === 'kokoro' ? 'wav' : 'mp3';
+    return 'wav';
   }
 
   private async enqueueSpeech(input: {
@@ -344,28 +406,14 @@ export class Cli2VoiceRuntime {
       }
 
       if (this.currentPlayback && this.config.playback.conflictPolicy === 'stop-and-replace') {
+        this.activeSpeechJobId += 1;
         await this.currentPlayback.stop();
         this.currentPlayback = null;
       }
 
-      const audio = await this.ttsProvider.synthesize({
-        text: input.speechText,
-        model: this.getCurrentModel(),
-        voice: this.getCurrentVoice(),
-        format: this.getCurrentAudioFormat(),
-        instructions: this.config.tts.provider === 'openai' ? this.config.openai.instructions : undefined
-      });
-
-      const playback = await this.playbackBackend.play(audio, {
-        rate: this.config.playback.rate,
-        format: this.getCurrentAudioFormat()
-      });
-      this.currentPlayback = playback;
-      playback.done?.finally(() => {
-        if (this.currentPlayback?.id === playback.id) {
-          this.currentPlayback = null;
-        }
-      });
+      const speechJobId = ++this.activeSpeechJobId;
+      await this.ensureTtsWarm().catch(() => undefined);
+      await this.playSpeechText(speechJobId, input.speechText);
 
       this.store.recordUtterance({
         sessionId: input.sessionId ?? null,
@@ -375,8 +423,248 @@ export class Cli2VoiceRuntime {
         decisionReason: 'spoken',
         spoken: true
       });
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`cli2voice speech error (recovering): ${message}\n`);
+      this.store.recordUtterance({
+        sessionId: input.sessionId ?? null,
+        source: input.source,
+        inputText: input.inputText,
+        spokenText: input.speechText,
+        decisionReason: 'synthesis-error',
+        spoken: false
+      });
     });
 
     return this.speechQueue;
   }
+
+  private async ensureTtsWarm(): Promise<void> {
+    if (this.ttsWarmState === 'warm' || !this.ttsProvider.warm) {
+      return;
+    }
+    if (this.ttsWarmPromise) {
+      return this.ttsWarmPromise;
+    }
+
+    this.ttsWarmState = 'warming';
+    this.ttsWarmPromise = this.ttsProvider
+      .warm({
+        model: this.config.kokoro.model,
+        voice: this.config.kokoro.voice,
+        format: this.getCurrentAudioFormat()
+      })
+      .then(() => {
+        this.ttsWarmState = 'warm';
+      })
+      .catch((error) => {
+        this.ttsWarmState = 'cold';
+        throw error;
+      })
+      .finally(() => {
+        this.ttsWarmPromise = null;
+      });
+
+    return this.ttsWarmPromise;
+  }
+
+  private async playSpeechText(speechJobId: number, text: string): Promise<void> {
+    if (this.ttsProvider.streamSynthesize && this.playbackBackend.playStream) {
+      try {
+        const streamingPlayback = await this.startSpeechStreamingPlayback(speechJobId, text);
+        if (streamingPlayback) {
+          return;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`cli2voice streaming playback failed, falling back to chunked playback: ${message}\n`);
+      }
+    }
+
+    const chunks = splitSpeechTextForPlayback(text);
+    if (chunks.length === 0) {
+      return;
+    }
+
+    let playback = await this.startSpeechChunkPlayback(speechJobId, chunks[0] as string);
+    if (!playback) {
+      return;
+    }
+
+    if (chunks.length === 1) {
+      return;
+    }
+
+    void this.continueSpeechChunks(speechJobId, playback, chunks.slice(1));
+  }
+
+  private async startSpeechStreamingPlayback(speechJobId: number, text: string): Promise<ActivePlayback | null> {
+    if (!this.ttsProvider.streamSynthesize || !this.playbackBackend.playStream) {
+      return null;
+    }
+    if (this.activeSpeechJobId !== speechJobId) {
+      return null;
+    }
+
+    const playback = await this.playbackBackend.playStream(
+      this.streamSpeechChunks(speechJobId, text),
+      {
+        rate: this.config.playback.rate,
+        format: this.getCurrentAudioFormat()
+      }
+    );
+
+    if (this.activeSpeechJobId !== speechJobId) {
+      await playback.stop().catch(() => undefined);
+      return null;
+    }
+
+    this.currentPlayback = playback;
+    this.attachPlaybackCleanup(playback);
+    return playback;
+  }
+
+  private async continueSpeechChunks(
+    speechJobId: number,
+    initialPlayback: ActivePlayback,
+    remainingChunks: string[]
+  ): Promise<void> {
+    let playback: ActivePlayback | null = initialPlayback;
+    let nextAudioPromise: Promise<Buffer> | null =
+      remainingChunks.length > 0 ? this.synthesizeSpeechChunk(remainingChunks[0] as string) : null;
+
+    for (let index = 0; index < remainingChunks.length; index += 1) {
+      if (this.activeSpeechJobId !== speechJobId) {
+        return;
+      }
+
+      await playback.done?.catch(() => undefined);
+      if (this.activeSpeechJobId !== speechJobId) {
+        return;
+      }
+
+      if (!nextAudioPromise) {
+        return;
+      }
+      const audio = await nextAudioPromise;
+      if (this.activeSpeechJobId !== speechJobId) {
+        return;
+      }
+
+      const followingChunk = remainingChunks[index + 1];
+      nextAudioPromise = followingChunk ? this.synthesizeSpeechChunk(followingChunk) : null;
+      playback = await this.playAudioBuffer(audio);
+      this.currentPlayback = playback;
+      this.attachPlaybackCleanup(playback);
+    }
+  }
+
+  private async startSpeechChunkPlayback(speechJobId: number, chunk: string): Promise<ActivePlayback | null> {
+    if (this.activeSpeechJobId !== speechJobId) {
+      return null;
+    }
+
+    const audio = await this.synthesizeSpeechChunk(chunk);
+    if (this.activeSpeechJobId !== speechJobId) {
+      return null;
+    }
+
+    const playback = await this.playAudioBuffer(audio);
+    this.currentPlayback = playback;
+    this.attachPlaybackCleanup(playback);
+    return playback;
+  }
+
+  private async synthesizeSpeechChunk(text: string): Promise<Buffer> {
+    return this.ttsProvider.synthesize({
+      text,
+      model: this.config.kokoro.model,
+      voice: this.config.kokoro.voice,
+      format: this.getCurrentAudioFormat()
+    });
+  }
+
+  private async playAudioBuffer(audio: Buffer): Promise<ActivePlayback> {
+    return this.playbackBackend.play(audio, {
+      rate: this.config.playback.rate,
+      format: this.getCurrentAudioFormat()
+    });
+  }
+
+  private async *streamSpeechChunks(speechJobId: number, text: string): AsyncIterable<Buffer> {
+    if (!this.ttsProvider.streamSynthesize) {
+      return;
+    }
+
+    const chunks = this.ttsProvider.streamSynthesize({
+      text,
+      model: this.config.kokoro.model,
+      voice: this.config.kokoro.voice,
+      format: this.getCurrentAudioFormat()
+    });
+
+    for await (const chunk of chunks) {
+      if (this.activeSpeechJobId !== speechJobId) {
+        return;
+      }
+      if (!Buffer.isBuffer(chunk) || chunk.length === 0) {
+        continue;
+      }
+      yield chunk;
+    }
+  }
+
+  private attachPlaybackCleanup(playback: ActivePlayback): void {
+    playback.done?.finally(() => {
+      if (this.currentPlayback?.id === playback.id) {
+        this.currentPlayback = null;
+      }
+    });
+  }
+}
+
+export function splitSpeechTextForPlayback(text: string): string[] {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return [];
+  }
+
+  if (normalized.length <= 90) {
+    return [normalized];
+  }
+
+  const sentences = normalized
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+
+  if (sentences.length <= 1) {
+    return [normalized];
+  }
+
+  const [firstSentence, ...remainingSentences] = sentences;
+  const chunks: string[] = [firstSentence as string];
+  let current = '';
+
+  for (const sentence of remainingSentences) {
+    if (!current) {
+      current = sentence;
+      continue;
+    }
+
+    const candidate = `${current} ${sentence}`;
+    if (candidate.length <= 180) {
+      current = candidate;
+      continue;
+    }
+
+    chunks.push(current);
+    current = sentence;
+  }
+
+  if (current) {
+    chunks.push(current);
+  }
+
+  return chunks;
 }

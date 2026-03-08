@@ -6,9 +6,11 @@
     "cli2voice": "dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "integrations"
   ],
   "dependencies": {
+    "@cli2voice/dictation-core": "file:../../packages/dictation-core",
     "@cli2voice/mcp-server": "file:../../packages/mcp-server",
     "@cli2voice/voice-core": "file:../../packages/voice-core",
     "@cli2voice/voice-daemon": "file:../../packages/voice-daemon"
@@ -16,6 +18,7 @@
   "scripts": {
     "build": "tsup src/cli.ts --format esm --out-dir dist",
     "check": "tsc -p tsconfig.json --noEmit",
-    "dev": "tsx src/cli.ts"
+    "dev": "tsx src/cli.ts",
+    "prepack": "rm -rf integrations && cp -R ../../integrations integrations"
   }
 }

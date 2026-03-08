@@ -1,0 +1,3 @@
+[mcp_servers.cli2voice]
+command = "node"
+args = ["__CLI2VOICE_APP_CLI__", "mcp"]

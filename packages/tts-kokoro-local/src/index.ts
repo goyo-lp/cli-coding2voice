@@ -1,5 +1,5 @@
-import { KokoroTTS } from 'kokoro-js';
-import type { SynthesisRequest, TextToSpeechProvider } from '@cli2voice/voice-core';
+import { KokoroTTS, TextSplitterStream } from 'kokoro-js';
+import type { SynthesisRequest, SynthesisWarmRequest, TextToSpeechProvider } from '@cli2voice/voice-core';
 
 export type KokoroQuantization = 'fp32' | 'fp16' | 'q8' | 'q4' | 'q4f16';
 export type KokoroDevice = 'cpu' | 'wasm' | 'webgpu' | null;
@@ -21,6 +21,20 @@ const DEFAULT_VOICE: KokoroVoice = 'af_heart';
 const DEFAULT_DTYPE: KokoroQuantization = 'q8';
 const DEFAULT_DEVICE: KokoroDevice = 'cpu';
 const DEFAULT_SPEED = 1;
+
+function splitTextForStreaming(text: string): string[] {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return [];
+  }
+
+  const sentences = normalized
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+
+  return sentences.length > 0 ? sentences : [normalized];
+}
 
 export class KokoroLocalTextToSpeechProvider implements TextToSpeechProvider {
   readonly name = 'kokoro';
@@ -48,6 +62,36 @@ export class KokoroLocalTextToSpeechProvider implements TextToSpeechProvider {
     return Buffer.from(wav);
   }
 
+  async warm(request: SynthesisWarmRequest = {}): Promise<void> {
+    const modelId = request.model || this.options.model || DEFAULT_MODEL;
+    await this.loadModel(modelId);
+  }
+
+  async *streamSynthesize(request: SynthesisRequest): AsyncIterable<Buffer> {
+    const text = request.text.trim();
+    if (!text) {
+      throw new Error('Cannot synthesize empty text.');
+    }
+
+    const format = request.format ?? 'wav';
+    if (format !== 'wav') {
+      throw new Error('Kokoro local synthesis only supports WAV output.');
+    }
+
+    const modelId = request.model || this.options.model || DEFAULT_MODEL;
+    const voice = (request.voice || this.options.voice || DEFAULT_VOICE) as KokoroVoice;
+    const speed = this.options.speed ?? DEFAULT_SPEED;
+    const tts = await this.loadModel(modelId);
+    const splitter = new TextSplitterStream();
+    const segments = splitTextForStreaming(text);
+    splitter.push(...segments);
+    splitter.close();
+
+    for await (const chunk of tts.stream(splitter, { voice, speed })) {
+      yield Buffer.from(chunk.audio.toWav());
+    }
+  }
+
   private loadModel(modelId: string): Promise<KokoroModel> {
     const dtype = this.options.dtype ?? DEFAULT_DTYPE;
     const device = this.options.device ?? DEFAULT_DEVICE;
@@ -61,6 +105,9 @@ export class KokoroLocalTextToSpeechProvider implements TextToSpeechProvider {
     const pending = KokoroTTS.from_pretrained(modelId, {
       dtype,
       device
+    }).catch((error) => {
+      this.models.delete(cacheKey);
+      throw error;
     });
     this.models.set(cacheKey, pending);
     return pending;

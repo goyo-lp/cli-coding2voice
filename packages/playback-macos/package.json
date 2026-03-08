@@ -11,7 +11,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "native"
   ],
   "dependencies": {
     "@cli2voice/voice-core": "file:../voice-core"
